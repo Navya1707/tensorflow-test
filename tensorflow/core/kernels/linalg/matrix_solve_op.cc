@@ -105,6 +105,7 @@ class MatrixSolveOp : public LinearAlgebraOp<Scalar> {
     // The necessary changes to Eigen are in
     // https://bitbucket.org/eigen/eigen/pull-requests/174/
     // add-matrix-condition-number-estimation/diff
+
     outputs->at(0) = lu_decomposition.solve(rhs);
   }
 
@@ -268,8 +269,9 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
       Eigen::BDCSVD<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> svd(
           mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
 
-      Scalar sigma_max = svd.singularValues()(0);
-      Scalar sigma_min = svd.singularValues()(svd.singularValues().size() - 1);
+      auto sing_vals = svd.singularValues();
+      Scalar sigma_max = sing_vals.maxCoeff();
+      Scalar sigma_min = sing_vals.minCoeff();
       Scalar cond = sigma_max / sigma_min;
 
       Scalar eps = std::numeric_limits<Scalar>::epsilon();
