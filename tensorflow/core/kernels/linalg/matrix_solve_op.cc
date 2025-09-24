@@ -105,16 +105,6 @@ class MatrixSolveOp : public LinearAlgebraOp<Scalar> {
     // The necessary changes to Eigen are in
     // https://bitbucket.org/eigen/eigen/pull-requests/174/
     // add-matrix-condition-number-estimation/diff
-
-    // Near-singular check: estimate condition number using machine epsilon
-    const RealScalar max_abs_pivot =
-        lu_decomposition.matrixLU().diagonal().cwiseAbs().maxCoeff();
-    RealScalar cond_number = max_abs_pivot / min_abs_pivot;
-    const int n = matrix.rows();
-    const RealScalar eps = std::numeric_limits<RealScalar>::epsilon();
-    const RealScalar kCondThreshold = static_cast<RealScalar>(n) / eps;
-    OP_REQUIRES(context, cond_number < kCondThreshold,
-                errors::InvalidArgument(kErrMsg));
     outputs->at(0) = lu_decomposition.solve(rhs);
   }
 
@@ -266,6 +256,26 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
                           &pivots_mat(batch, 0), &dev_info.back()(batch)),
             done);
       }
+    }
+
+    // ---- Near-singular check: estimate condition number using machine epsilon ----
+    // This check is performed for each matrix in the batch.
+    for (int batch = 0; batch < batch_size; ++batch) {
+      // Convert the matrix to Eigen for SVD
+      Eigen::Map<const Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> 
+        mat(&input_copy_reshaped(batch, 0, 0), n, n);
+
+      Eigen::BDCSVD<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> svd(
+          mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
+
+      Scalar sigma_max = svd.singularValues()(0);
+      Scalar sigma_min = svd.singularValues()(svd.singularValues().size() - 1);
+      Scalar cond = sigma_max / sigma_min;
+
+      Scalar eps = std::numeric_limits<Scalar>::epsilon();
+      const int n = mat.rows();
+      OP_REQUIRES_ASYNC(context, cond <= n / eps,
+                        errors::InvalidArgument(kErrMsg), done);
     }
 
     // 2. Make a transposed copy of the right-hand sides. This is necessary
