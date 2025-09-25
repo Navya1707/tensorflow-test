@@ -206,6 +206,7 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
       }
     }
     auto input_copy_reshaped = input_copy.template flat_inner_dims<Scalar, 3>();
+    auto input_reshaped = input.template flat_inner_dims<Scalar, 3>();
     const int64_t batch_size = input_copy_reshaped.dimension(0);
 
     // Allocate pivots on the device.
@@ -264,7 +265,7 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
     for (int batch = 0; batch < batch_size; ++batch) {
       // Convert the matrix to Eigen for SVD
       Eigen::Map<const Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> 
-        mat(&input_copy_reshaped(batch, 0, 0), n, n);
+        mat(&input_reshaped(batch, 0, 0), n, n);
 
       Eigen::BDCSVD<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> svd(
           mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
