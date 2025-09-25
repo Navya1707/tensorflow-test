@@ -273,18 +273,31 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
         done);
     }
     // Reciprocal condition number
-    Scalar rcond_val = 0;
-    DeviceLapackInfo dev_info_gecon = solver->GetDeviceLapackInfo(1, "gecon");
-    OP_REQUIRES_OK_ASYNC(
-      context,
-      solver->Gecon(n, &input_copy_reshaped(batch,0,0), n,
-                  anorm, &rcond_val, &dev_info_gecon),
-      done);
+    for (int batch = 0; batch < batch_size; ++batch) {
+      Scalar anorm = 0;
+      // 1-norm of matrix
+      OP_REQUIRES_OK_ASYNC(
+        context,
+        solver->MatrixNormOne(n, &input_copy_reshaped(batch,0,0), n, &anorm),
+        done);
 
-    // Check condition number
-    Scalar eps = std::numeric_limits<Scalar>::epsilon();
-    OP_REQUIRES_ASYNC(context, rcond_val > eps,
-                      errors::InvalidArgument(kErrMsg), done);
+      Scalar rcond_val = 0;
+      dev_info.push_back(solver->GetDeviceLapackInfo(1, "gecon"));
+      OP_REQUIRES_OK_ASYNC(
+        context,
+        solver->Gecon(n, &input_copy_reshaped(batch,0,0), n,
+                      anorm, &rcond_val, &dev_info.back()),
+        done);
+
+      LOG(INFO) << "Batch " << batch
+            << " anorm=" << anorm
+            << " rcond=" << rcond_val;
+
+      // Fail if rcond ~ 0
+      OP_REQUIRES_ASYNC(context, rcond_val > std::numeric_limits<Scalar>::epsilon(),
+                        errors::InvalidArgument(kErrMsg), done);
+    }
+
 
     // 2. Make a transposed copy of the right-hand sides. This is necessary
     // because cuBLAS/rocSolver assumes column-major storage while TensorFlow TF
