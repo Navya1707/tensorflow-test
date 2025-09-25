@@ -210,22 +210,6 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
     auto input_copy_reshaped = input_copy.template flat_inner_dims<Scalar, 3>();
     
     const int64_t batch_size = input_copy_reshaped.dimension(0);
-    for (int batch = 0; batch < batch_size; ++batch) {
-      Eigen::Map<const Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> 
-      mat(&input_copy_reshaped(batch, 0, 0), n, n);
-
-      Eigen::BDCSVD<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> svd(
-      mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
-
-      auto sing_vals = svd.singularValues();
-      Scalar sigma_max = sing_vals.maxCoeff();
-      Scalar sigma_min = sing_vals.minCoeff();
-      Scalar cond = sigma_max / sigma_min;
-
-      Scalar eps = std::numeric_limits<Scalar>::epsilon();
-      OP_REQUIRES_ASYNC(context, cond <= n / eps,
-                        errors::InvalidArgument(kErrMsg), done);
-    }
 
     // Allocate pivots on the device.
     Tensor pivots;
@@ -277,6 +261,30 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
             done);
       }
     }
+
+    Scalar anorm = 0;
+    {
+    // compute 1-norm of original matrix using cuBLAS
+    // e.g., cublasSnrm1 for float, cublasDnrm1 for double
+    // Or use solver->MatrixNormOne(...) wrapper if available
+      OP_REQUIRES_OK_ASYNC(
+        context,
+        solver->MatrixNormOne(n, &input_copy_reshaped(batch,0,0), n, &anorm),
+        done);
+    }
+    // Reciprocal condition number
+    Scalar rcond_val = 0;
+    DeviceLapackInfo dev_info_gecon = solver->GetDeviceLapackInfo(1, "gecon");
+    OP_REQUIRES_OK_ASYNC(
+      context,
+      solver->Gecon(n, &input_copy_reshaped(batch,0,0), n,
+                  anorm, &rcond_val, &dev_info_gecon),
+      done);
+
+    // Check condition number
+    Scalar eps = std::numeric_limits<Scalar>::epsilon();
+    OP_REQUIRES_ASYNC(context, rcond_val > eps,
+                      errors::InvalidArgument(kErrMsg), done);
 
     // 2. Make a transposed copy of the right-hand sides. This is necessary
     // because cuBLAS/rocSolver assumes column-major storage while TensorFlow TF
