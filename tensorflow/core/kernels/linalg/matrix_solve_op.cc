@@ -182,7 +182,22 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
     // Make a copy of the input for the factorization step, or, if adjoint_ is
     // false, try to reuse the input buffer if this op owns it exclusively.
     Tensor input_copy;
+    
     const GPUDevice& device = context->eigen_device<GPUDevice>();
+    Eigen::Map<const Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> 
+    mat(input_copy.flat<Scalar>().data(), n, n);
+
+    Eigen::BDCSVD<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> svd(
+    mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
+
+    auto sing_vals = svd.singularValues();
+    Scalar sigma_max = sing_vals.maxCoeff();
+    Scalar sigma_min = sing_vals.minCoeff();
+    Scalar cond = sigma_max / sigma_min;
+
+    Scalar eps = std::numeric_limits<Scalar>::epsilon();
+    OP_REQUIRES_ASYNC(context, cond <= n / eps,
+                      errors::InvalidArgument(kErrMsg), done);
     if (adjoint_) {
       // For the adjoint case, it is simpler to always make a transposed copy up
       // front.
@@ -258,41 +273,6 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
                           &pivots_mat(batch, 0), &dev_info.back()(batch)),
             done);
       }
-    }
-
-    // ---- Near-singular check: estimate condition number using machine epsilon ----
-    // This check is performed for each matrix in the batch.
-    for (int batch = 0; batch < batch_size; ++batch) {
-      // Convert the matrix to Eigen for SVD
-      Eigen::Map<const Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> 
-        mat(&input_reshaped(batch, 0, 0), n, n);
-
-      LOG(INFO) << "Batch " << batch << " input matrix:\n" << mat;
-
-      Eigen::BDCSVD<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> svd(
-          mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
-
-      auto sing_vals = svd.singularValues();
-      Scalar sigma_max = sing_vals.maxCoeff();
-      Scalar sigma_min = sing_vals.minCoeff();
-      Scalar cond = sigma_max / sigma_min;
-
-      LOG(INFO) << "Batch " << batch
-            << " singular values: " << sing_vals.transpose();
-      LOG(INFO) << "Batch " << batch
-            << " sigma_max=" << sigma_max
-            << " sigma_min=" << sigma_min
-            << " cond=" << cond;
-
-      Scalar eps = std::numeric_limits<Scalar>::epsilon();
-      const int n = mat.rows();
-
-      LOG(INFO) << "Batch " << batch
-            << " eps=" << eps
-            << " n=" << n_local
-            << " threshold (n/eps)=" << static_cast<Scalar>(n_local) / eps;
-      OP_REQUIRES_ASYNC(context, cond <= n / eps,
-                        errors::InvalidArgument(kErrMsg), done);
     }
 
     // 2. Make a transposed copy of the right-hand sides. This is necessary
