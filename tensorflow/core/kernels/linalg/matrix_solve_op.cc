@@ -206,7 +206,7 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
       }
     }
     auto input_copy_reshaped = input_copy.template flat_inner_dims<Scalar, 3>();
-    auto input_reshaped = input.template flat_inner_dims<Scalar, 3>();
+    auto input_reshaped = input_copy.template flat_inner_dims<Scalar, 3>();
     const int64_t batch_size = input_copy_reshaped.dimension(0);
 
     // Allocate pivots on the device.
@@ -267,6 +267,8 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
       Eigen::Map<const Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> 
         mat(&input_reshaped(batch, 0, 0), n, n);
 
+      LOG(INFO) << "Batch " << batch << " input matrix:\n" << mat;
+
       Eigen::BDCSVD<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> svd(
           mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
 
@@ -275,8 +277,20 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
       Scalar sigma_min = sing_vals.minCoeff();
       Scalar cond = sigma_max / sigma_min;
 
+      LOG(INFO) << "Batch " << batch
+            << " singular values: " << sing_vals.transpose();
+      LOG(INFO) << "Batch " << batch
+            << " sigma_max=" << sigma_max
+            << " sigma_min=" << sigma_min
+            << " cond=" << cond;
+
       Scalar eps = std::numeric_limits<Scalar>::epsilon();
       const int n = mat.rows();
+
+      LOG(INFO) << "Batch " << batch
+            << " eps=" << eps
+            << " n=" << n_local
+            << " threshold (n/eps)=" << static_cast<Scalar>(n_local) / eps;
       OP_REQUIRES_ASYNC(context, cond <= n / eps,
                         errors::InvalidArgument(kErrMsg), done);
     }
