@@ -261,42 +261,28 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
             done);
       }
     }
-
-    Scalar anorm = 0;
-    {
-    // compute 1-norm of original matrix using cuBLAS
-    // e.g., cublasSnrm1 for float, cublasDnrm1 for double
-    // Or use solver->MatrixNormOne(...) wrapper if available
-      OP_REQUIRES_OK_ASYNC(
-        context,
-        solver->MatrixNormOne(n, &input_copy_reshaped(batch,0,0), n, &anorm),
-        done);
-    }
-    // Reciprocal condition number
+    // Near-singular check using LU diagonal pivots
     for (int batch = 0; batch < batch_size; ++batch) {
-      Scalar anorm = 0;
-      // 1-norm of matrix
-      OP_REQUIRES_OK_ASYNC(
-        context,
-        solver->MatrixNormOne(n, &input_copy_reshaped(batch,0,0), n, &anorm),
-        done);
+      bool singular = false;
+      Scalar tol = std::numeric_limits<Scalar>::epsilon() * n;
 
-      Scalar rcond_val = 0;
-      dev_info.push_back(solver->GetDeviceLapackInfo(1, "gecon"));
-      OP_REQUIRES_OK_ASYNC(
-        context,
-        solver->Gecon(n, &input_copy_reshaped(batch,0,0), n,
-                      anorm, &rcond_val, &dev_info.back()),
-        done);
+      for (int i = 0; i < n; i++) {
+        Scalar diag_val = input_copy_reshaped(batch, i, i);
+        if (Eigen::numext::abs(diag_val) < tol) {
+          singular = true;
+          break;
+        }
+      }
 
-      LOG(INFO) << "Batch " << batch
-            << " anorm=" << anorm
-            << " rcond=" << rcond_val;
+      LOG(ERROR) << "Batch " << batch
+             << " tol=" << tol
+             << " diag_min="
+             << input_copy_reshaped(batch, 0, 0);  // you can print more if needed
 
-      // Fail if rcond ~ 0
-      OP_REQUIRES_ASYNC(context, rcond_val > std::numeric_limits<Scalar>::epsilon(),
+      OP_REQUIRES_ASYNC(context, !singular,
                         errors::InvalidArgument(kErrMsg), done);
     }
+
 
 
     // 2. Make a transposed copy of the right-hand sides. This is necessary
