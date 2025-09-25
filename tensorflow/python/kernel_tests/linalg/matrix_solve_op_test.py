@@ -153,7 +153,7 @@ class MatrixSolveOpTest(test.TestCase):
         [3.0, 6.0, 9.0]
       ], dtype=dtypes.float64)
       rhs = constant_op.constant([[1.0], [1.0], [1.0]], dtype=dtypes.float64)
-      self.evaluate(linalg_ops.matrix_solve(matrix, rhs))
+      self.evaluate(linalg_ops.matrix_solve(matrix, rhs, adjoint=True))
 
 class MatrixSolveBenchmark(test.Benchmark):
 
