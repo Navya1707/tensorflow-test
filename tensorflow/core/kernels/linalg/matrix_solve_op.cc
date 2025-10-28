@@ -396,6 +396,8 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
                             const std::vector<HostLapackInfo>& host_infos) {
       if (!host_infos.empty()) {
         for (int i = 0; i < host_infos[0].size(); ++i) {
+          const int info = host_infos[0].data()[i];
+          LOG(INFO) << "MatrixSolve info[" << i << "] = " << info;
           // Match the CPU error message for singular matrices. Otherwise
           // just print the original error message from the status below.
           OP_REQUIRES_ASYNC(context, host_infos[0].data()[i] <= 0,
