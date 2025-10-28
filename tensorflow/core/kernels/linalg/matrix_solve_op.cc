@@ -19,6 +19,10 @@ limitations under the License.
 #endif
 
 #include <numeric>
+#include <algorithm>
+#include <limits>
+
+#include "absl/status/status.h"
 
 #include "Eigen/Core"  // from @eigen_archive
 #include "Eigen/LU"  // from @eigen_archive
@@ -32,6 +36,7 @@ limitations under the License.
 #include "tensorflow/core/platform/types.h"
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+#include "tensorflow/core/kernels/diag_op.h"
 #include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/kernels/transpose_functor.h"
 #include "tensorflow/core/util/gpu_solvers.h"
@@ -210,7 +215,15 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
     auto input_copy_reshaped = input_copy.template flat_inner_dims<Scalar, 3>();
     
     const int64_t batch_size = input_copy_reshaped.dimension(0);
-
+    Tensor lu_diagonal_gpu;
+    if (n > 0) {
+      OP_REQUIRES_OK_ASYNC(
+          context,
+          context->allocate_temp(DataTypeToEnum<Scalar>::value,
+                                 TensorShape({batch_size, n}),
+                                 &lu_diagonal_gpu),
+          done);
+    }
     // Allocate pivots on the device.
     Tensor pivots;
     OP_REQUIRES_OK_ASYNC(
@@ -284,7 +297,17 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
     }*/
 
 
-
+    if (lu_diagonal_gpu.NumElements() > 0) {
+      auto lu_diagonal_matrix = lu_diagonal_gpu.template matrix<Scalar>();
+      functor::DiagPartFunctor<GPUDevice, Scalar> diag_part_functor;
+      for (int batch = 0; batch < batch_size; ++batch) {
+        OP_REQUIRES_OK_ASYNC(
+            context,
+            diag_part_functor(context, n, &input_copy_reshaped(batch, 0, 0),
+                              &lu_diagonal_matrix(batch, 0)),
+            done);
+      }
+    }
     // 2. Make a transposed copy of the right-hand sides. This is necessary
     // because cuBLAS/rocSolver assumes column-major storage while TensorFlow TF
     // uses row-major.
@@ -391,7 +414,7 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
     // temporary Tensors/ScratchSpace so they don't get deallocated before the
     // kernels run. TODO(rmlarsen): Use move capture once C++14 becomes
     // available.
-    auto info_checker = [context, done, dev_info](
+    auto info_checker = [context, done, lu_diagonal_gpu, batch_size, n](
                             const Status& status,
                             const std::vector<HostLapackInfo>& host_infos) {
       if (!host_infos.empty()) {
@@ -405,6 +428,38 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
         }
       }
       OP_REQUIRES_OK_ASYNC(context, status, done);
+      if (lu_diagonal_gpu.NumElements() > 0) {
+        Tensor lu_diagonal_host(context->device()->GetCpuAllocator(),
+                                lu_diagonal_gpu.dtype(),
+                                lu_diagonal_gpu.shape());
+        absl::Status copy_status =
+            context->op_device_context()->CopyDeviceTensorToCPUSync(
+                &lu_diagonal_gpu, "matrix_solve_lu_diag", context->device(),
+                &lu_diagonal_host);
+        OP_REQUIRES_ASYNC(context, copy_status.ok(),
+                          errors::Internal(copy_status.message()), done);
+        auto lu_diagonal_host_matrix = lu_diagonal_host.matrix<Scalar>();
+        using RealScalar = typename Eigen::NumTraits<Scalar>::Real;
+        const RealScalar eps = Eigen::NumTraits<RealScalar>::epsilon();
+        const RealScalar threshold =
+            static_cast<RealScalar>(n) / eps;
+        for (int64_t batch = 0; batch < batch_size; ++batch) {
+          RealScalar min_abs = std::numeric_limits<RealScalar>::infinity();
+          RealScalar max_abs = RealScalar(0);
+          for (int64_t i = 0; i < n; ++i) {
+            const RealScalar abs_val =
+                static_cast<RealScalar>(
+                    Eigen::numext::abs(lu_diagonal_host_matrix(batch, i)));
+            min_abs = std::min(min_abs, abs_val);
+            max_abs = std::max(max_abs, abs_val);
+          }
+          OP_REQUIRES_ASYNC(context, min_abs > RealScalar(0),
+                            errors::InvalidArgument(kErrMsg), done);
+          const RealScalar cond_est = max_abs / min_abs;
+          OP_REQUIRES_ASYNC(context, cond_est < threshold,
+                            errors::InvalidArgument(kErrMsg), done);
+        }
+      }
       done();
     };
     GpuSolver::CheckLapackInfoAndDeleteSolverAsync(std::move(solver), dev_info,
