@@ -261,7 +261,7 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
             done);
       }
     }
-    // Near-singular check using LU diagonal pivots
+    /* Near-singular check using LU diagonal pivots
     for (int batch = 0; batch < batch_size; ++batch) {
       bool singular = false;
       Scalar tol = std::numeric_limits<Scalar>::epsilon() * n;
@@ -281,7 +281,7 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
 
       OP_REQUIRES_ASYNC(context, !singular,
                         errors::InvalidArgument(kErrMsg), done);
-    }
+    }*/
 
 
 
@@ -394,8 +394,7 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
     auto info_checker = [context, done, dev_info](
                             const Status& status,
                             const std::vector<HostLapackInfo>& host_infos) {
-      if (!status.ok() && absl::IsInvalidArgument(status) &&
-          !host_infos.empty()) {
+      if (!host_infos.empty()) {
         for (int i = 0; i < host_infos[0].size(); ++i) {
           // Match the CPU error message for singular matrices. Otherwise
           // just print the original error message from the status below.
